@@ -16,4 +16,5 @@ tokio-serde = {version = "0.8", features =["json", "bincode"]}
 tracing = {version = "0.1", default-features = false, features = ["attributes", "log"]}
 tracing-subscriber = "0.2"
 tracing-opentelemetry = {version = "0.15", default-features = false}
-opentelemetry = {version = "0.16", default-features = false}
+opentelemetry = {version = "0.16", default-features = false, features = ["rt-tokio"]}
+opentelemetry-jaeger = {version = "0.15", features = ["rt-tokio"]}

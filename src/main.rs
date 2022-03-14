@@ -219,16 +219,95 @@ impl Publisher {
 #[tarpc::server]
 impl publisher::Publisher for Publisher {
     async fn publish(self, _: context::Context, topic: String, message: String) {
-        panic!("TODO")
+        info!("received message to publish.");
+        let mut subscribers = match self.subscriptions.read().unwrap().get(&topic) {
+            None => return,
+            Some(subscriptions) => subscriptions.clone(),
+        };
+        let mut publications = Vec::new();
+        for client in subscribers.values_mut() {
+            publications.push(client.receive(context::current(), topic.clone(), message.clone()));
+        }
+        // Ignore failing subscribers.
+        // In a real pubsub, you7d want to continually retry until subscribers ack.
+        // Of course, a lot would be different in a real pubsub.
+        for response in future::join_all(publications).await {
+            if let Err(e) = response {
+                info!("failed to broadcast to subscriber: {}", e);
+            }
+        }
     }
 }
 
 fn init_tracing(service_name: &str) -> anyhow::Result<()> {
-    panic!("TODO")
+    env::set_var("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", "12");
+    let tracer = opentelemetry_jaeger::new_pipeline()
+        .with_service_name(service_name)
+        .with_max_packet_size(2usize.pow(13))
+        .install_batch(opentelemetry::runtime::Tokio)?;
+
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::from_default_env())
+        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_opentelemetry::layer().with_tracer(tracer))
+        .try_init()?;
+
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // TODO
+    init_tracing("Pub/Sub")?;
+
+    let addrs = Publisher {
+        clients: Arc::new(Mutex::new(HashMap::new())),
+        subscriptions: Arc::new(RwLock::new(HashMap::new())),
+    }
+    .start()
+    .await?;
+
+    let _subscriber0 = Subscriber::connect(
+        addrs.subscriptions,
+        vec!["calculus".into(), "cool shorts".into()],
+    )
+    .await?;
+
+    let _subscriber1 = Subscriber::connect(
+        addrs.subscriptions,
+        vec!["cool shorts".into(), "history".into()],
+    )
+    .await?;
+
+    let publisher = publisher::PublisherClient::new(
+        client::Config::default(),
+        tcp::connect(addrs.publisher, Json::default).await?,
+    )
+    .spawn();
+
+    publisher
+        .publish(
+            context::current(),
+            "cool shorts".into(),
+            "hello to all".into(),
+        )
+        .await?;
+
+    publisher
+        .publish(context::current(), "history".into(), "napoleon".into())
+        .await?;
+
+    drop(_subscriber0);
+
+    publisher
+        .publish(
+            context::current(),
+            "cool shorts".into(),
+            "hello to who?".into(),
+        )
+        .await?;
+
+    opentelemetry::global::shutdown_tracer_provider();
+    info!("done.");
+
     Ok(())
 }
