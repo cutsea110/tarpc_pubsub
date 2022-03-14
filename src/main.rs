@@ -109,17 +109,82 @@ struct PublisherAddrs {
 
 impl Publisher {
     async fn start(self) -> io::Result<PublisherAddrs> {
-        panic!("TODO")
+        let mut connecting_publishers = tcp::listen("localhost:0", Json::default).await?;
+
+        let publisher_addrs = PublisherAddrs {
+            publisher: connecting_publishers.local_addr(),
+            subscriptions: self.clone().start_subscription_manager().await?,
+        };
+
+        info!(publisher_addr = %publisher_addrs.publisher, "listening for publishers.");
+        tokio::spawn(async move {
+            // Because this is just an example, we know there will only be one publisher.
+            // In more realistic code, this would be a loop to continually accept
+            // new publisher connections
+            let publisher = connecting_publishers.next().await.unwrap().unwrap();
+            info!(publisher.peer_addr = ?publisher.peer_addr(), "publisher connected");
+
+            server::BaseChannel::with_defaults(publisher)
+                .execute(self.serve())
+                .await
+        });
+
+        Ok(publisher_addrs)
     }
     async fn start_subscription_manager(mut self) -> io::Result<SocketAddr> {
-        panic!("TODO")
+        let mut connecting_subscribers = tcp::listen("localhost:0", Json::default)
+            .await?
+            .filter_map(|r| future::ready(r.ok()));
+        let new_subscriber_addr = connecting_subscribers.get_ref().local_addr();
+        info!(?new_subscriber_addr, "listening for subscribers.");
+
+        tokio::spawn(async move {
+            while let Some(conn) = connecting_subscribers.next().await {
+                let subscriber_addr = conn.peer_addr().unwrap();
+
+                let tarpc::client::NewClient {
+                    client: subscriber,
+                    dispatch,
+                } = subscriber::SubscriberClient::new(client::Config::default(), conn);
+                let (ready_tx, ready) = oneshot::channel();
+                self.clone()
+                    .start_subscriber_gc(subscriber_addr, dispatch, ready);
+
+                // Populate the topics
+                self.initialize_subscription(subscriber_addr, subscriber)
+                    .await;
+
+                // Signal that initialization is done.
+                ready_tx.send(()).unwrap();
+            }
+        });
+
+        Ok(new_subscriber_addr)
     }
     async fn initialize_subscription(
         &mut self,
         subscriber_addr: SocketAddr,
         subscriber: subscriber::SubscriberClient,
     ) {
-        panic!("TODO")
+        // Populate the topics
+        if let Ok(topics) = subscriber.topics(context::current()).await {
+            self.clients.lock().unwrap().insert(
+                subscriber_addr,
+                Subscription {
+                    subscriber: subscriber.clone(),
+                    topics: topics.clone(),
+                },
+            );
+
+            info!(%subscriber_addr, ?topics, "subscribed to new topics.");
+            let mut subscriptions = self.subscriptions.write().unwrap();
+            for topic in topics {
+                subscriptions
+                    .entry(topic)
+                    .or_insert_with(HashMap::new)
+                    .insert(subscriber_addr, subscriber.clone());
+            }
+        }
     }
     fn start_subscriber_gc<E: Error>(
         self,
@@ -127,7 +192,27 @@ impl Publisher {
         client_dispatch: impl Future<Output = Result<(), E>> + Send + 'static,
         subscriber_ready: oneshot::Receiver<()>,
     ) {
-        panic!("TODO")
+        tokio::spawn(async move {
+            if let Err(e) = client_dispatch.await {
+                info!(%subscriber_addr, error = %e, "subscriber connection broken.");
+            }
+            // Don't clean up the subscriber until initialization is done.
+            let _ = subscriber_ready.await;
+            if let Some(subscription) = self.clients.lock().unwrap().remove(&subscriber_addr) {
+                info!(
+                    "[{}] unsubscribing from topics: {:?}",
+                    subscriber_addr, subscription.topics
+                );
+                let mut subscriptions = self.subscriptions.write().unwrap();
+                for topic in subscription.topics {
+                    let subscribers = subscriptions.get_mut(&topic).unwrap();
+                    subscribers.remove(&subscriber_addr);
+                    if subscribers.is_empty() {
+                        subscriptions.remove(&topic);
+                    }
+                }
+            }
+        });
     }
 }
 
