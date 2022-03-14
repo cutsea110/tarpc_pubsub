@@ -285,25 +285,17 @@ async fn main() -> anyhow::Result<()> {
     .spawn();
 
     publisher
-        .publish(
-            context::current(),
-            "cool shorts".into(),
-            "hello to all".into(),
-        )
+        .publish(context::current(), "cool shorts".into(), "TOOT".into())
         .await?;
 
     publisher
-        .publish(context::current(), "history".into(), "napoleon".into())
+        .publish(context::current(), "history".into(), "Napoleon".into())
         .await?;
 
     drop(_subscriber0);
 
     publisher
-        .publish(
-            context::current(),
-            "cool shorts".into(),
-            "hello to who?".into(),
-        )
+        .publish(context::current(), "cool shorts".into(), "Aubade".into())
         .await?;
 
     opentelemetry::global::shutdown_tracer_provider();
