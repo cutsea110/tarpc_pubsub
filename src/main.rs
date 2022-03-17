@@ -218,7 +218,13 @@ impl Publisher {
 
 #[tarpc::server]
 impl publisher::Publisher for Publisher {
-    async fn publish(self, _: context::Context, topic: String, message: String) {
+    async fn publish(self, ctx: context::Context, topic: String, message: String) {
+        info!(
+            "ctx.trance_id: {}, trace.trace_id: {}, trace.span_id: {}",
+            ctx.trace_id(),
+            ctx.trace_context.trace_id,
+            ctx.trace_context.span_id,
+        );
         info!("received message to publish.");
         let mut subscribers = match self.subscriptions.read().unwrap().get(&topic) {
             None => return,
